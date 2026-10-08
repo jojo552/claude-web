@@ -1713,12 +1713,30 @@ export function installOfficialLayout(win = window) {
       // sheet's box, the shield was stacked above it (user saw the whole editor, close button included, unclickable).
       // Fix the order as soon as the pointer moves over it, so the first click already works.
       shield.addEventListener('pointermove', shieldAboveSheet);
-      doc.body.append(shield);
+      shield.addEventListener('wheel', e => { if (shieldAboveSheet(e)) e.preventDefault(); }, {passive: false});
+      // Whoever re-shows the shield (some extensions re-show every open popover in document order to keep their own
+      // widgets on top) must not leave it above an open sheet: check the order on the next frame.
+      shield.addEventListener('toggle', e => { if (e.newState === 'open') win.requestAnimationFrame(keepShieldBelowSheets); });
+      // First in <body>: a re-show pass in document order then shows the shield before the sheets, not after them.
+      doc.body.prepend(shield);
     }
     if (!externalModalOpen && !shield.matches(':popover-open')) {
       shield.showPopover();
       // Showing the shield puts it above sheets that are already open; lift them back over it.
       for (const d of openSheetLayers()) if (d.matches(':popover-open')) { try { d.hidePopover(); d.showPopover(); } catch {} }
+    }
+  }
+  function keepShieldBelowSheets() {
+    if (destroyed || externalModalOpen || !shield?.matches(':popover-open')) return;
+    for (const d of openSheetLayers()) {
+      if (!d.matches(':popover-open')) continue;
+      const r = d.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      if (doc.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 40)) === shield) {
+        console.warn('[Claude Web] sheet shield was re-shown above an open sheet; restacking');
+        restoreSheetLayers(openSheetLayers());
+        return;
+      }
     }
   }
   function shieldAboveSheet(e) {
