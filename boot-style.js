@@ -63,6 +63,7 @@ function writeCustomCss(settings, next) {
 
 /** Puts the boot block (for the current variant/layout) at the top of Custom CSS. */
 export function syncBootStyle(options) {
+  if (globalThis.__claudeWebWithdrawn) return;
   const ctx = context();
   const settings = ctx?.powerUserSettings;
   if (!settings) return false;
@@ -72,12 +73,12 @@ export function syncBootStyle(options) {
 }
 
 /** Removes the boot block and saves immediately (used right before a reload or a disable). */
-export async function removeBootStyle() {
+export async function removeBootStyle({save = true} = {}) {
   const ctx = context();
   const settings = ctx?.powerUserSettings;
   if (!settings) return false;
   const changed = writeCustomCss(settings, stripBootBlock(settings.custom_css));
-  if (changed) {
+  if (changed && save) {
     try {
       await (ctx.saveSettings ? ctx.saveSettings() : ctx.saveSettingsDebounced?.());
     } catch (error) {
@@ -88,5 +89,15 @@ export async function removeBootStyle() {
 }
 
 // Extension manager hooks (referenced from manifest.json, re-exported by the loader).
-export const claudeWebOnDisable = removeBootStyle;
-export const claudeWebOnDelete = removeBootStyle;
+async function detachFromNativeManager() {
+  // Strip the import first, even if recovery subsequently fails. Never reload from a hook: the
+  // host must save its disabledExtensions list or finish its deletion before it navigates.
+  globalThis.__claudeWebWithdrawn = true;
+  globalThis.__claudeNativeDetachGeneration = (globalThis.__claudeNativeDetachGeneration || 0) + 1;
+  void removeBootStyle({save: false});
+  const { installSafety } = await import('./emergency.js?v=' + encodeURIComponent(VERSION));
+  const safety = await installSafety();
+  await safety.detach();
+}
+export const claudeWebOnDisable = detachFromNativeManager;
+export const claudeWebOnDelete = detachFromNativeManager;

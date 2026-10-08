@@ -4,7 +4,7 @@
 // Run: (cd tools && npm i && node build-boot-css.mjs)
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import postcss from 'postcss';
 import selectorParser from 'postcss-selector-parser';
 
@@ -72,8 +72,9 @@ function makeSelectorTransform({ layout, variant }) {
       if (firstCompoundIsRoot) {
         let index = 0;
         while (index < selector.nodes.length && selector.nodes[index].type !== 'combinator') index++;
-        selector.insertBefore(selector.nodes[index] ?? null, pseudoFrom(GATE_ROOT));
-        if (index >= selector.nodes.length) selector.append(pseudoFrom(GATE_ROOT));
+        const boundary = selector.nodes[index];
+        if (boundary) selector.insertBefore(boundary, pseudoFrom(GATE_ROOT));
+        else selector.append(pseudoFrom(GATE_ROOT));
       } else {
         const first = selector.first;
         selector.prepend(selectorParser.combinator({ value: ' ' }));
@@ -104,7 +105,7 @@ function transformCss(css, from, options) {
 }
 
 async function iconRules() {
-  const { officialIcons } = await import(path.join(ROOT, 'official-icons.js'));
+  const { officialIcons } = await import(pathToFileURL(path.join(ROOT, 'official-icons.js')).href);
   const vars = Object.entries(officialIcons).map(([name, d]) => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>';
     return '  --cw-v4-icon-' + name + ':url("data:image/svg+xml,' + encodeURIComponent(svg) + '");';

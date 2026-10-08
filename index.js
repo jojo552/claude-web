@@ -1,4 +1,4 @@
-/* Claude Web public 2.0.122. Allowed runtime transplant; exclusions removed before generation. */
+/* Claude Web public 2.0.124. Allowed runtime transplant; exclusions removed before generation. */
 (function() {
   try {
     for (const [k, v] of [ [ "mode", "full" ], [ "structure", "rail" ], [ "skin", "classic" ] ]) localStorage.setItem("claude-web:" + k, v);
@@ -13,15 +13,15 @@
   } catch {}
 })();
 
-import { installStreamFollow } from "./stream-follow.js?v=2.0.122";
+import { installStreamFollow } from "./stream-follow.js?v=2.0.124";
 
-import { installOfficialLayout } from "./official-layout.js?v=2.0.122";
+import { installOfficialLayout } from "./official-layout.js?v=2.0.124";
 
-import { buildClawdRig } from "./clawd-rig.js?v=2.0.122";
+import { buildClawdRig } from "./clawd-rig.js?v=2.0.124";
 
-import { createClawdPile } from "./clawd-pile.js?v=2.0.122";
+import { createClawdPile } from "./clawd-pile.js?v=2.0.124";
 
-import { syncBootStyle, removeBootStyle } from "./boot-style.js?v=2.0.122";
+import { syncBootStyle, removeBootStyle, stripBootBlock } from "./boot-style.js?v=2.0.124";
 
 const CLAUDE_EXTENSION_BASE = new URL(".", import.meta.url).href;
 
@@ -122,15 +122,24 @@ function claudeReadSetting(key, allowed, fallback) {
 }
 
 try {
-  const escapeQuery = new URLSearchParams(location.search);
+  const escapeUrl = new URL(location.href);
+  const escapeQuery = escapeUrl.searchParams;
+  let consumedEscape = false;
   const wanted = [ [ "claudelayout", "layout", [ "auto", "pc", "mobile" ] ], [ "claude", "enabled", [ "on", "off" ] ] ];
   for (const [param, key, allowed] of wanted) {
     const value = escapeQuery.get(param);
-    value && allowed.includes(value) && window.localStorage.setItem("claude-web:" + key, value);
+    if (value && allowed.includes(value)) {
+      window.localStorage.setItem("claude-web:" + key, value);
+      escapeQuery.delete(param);
+      consumedEscape = true;
+    }
   }
+  if (consumedEscape) history.replaceState(history.state, "", escapeUrl.pathname + escapeUrl.search + escapeUrl.hash);
 } catch {}
 
-let CLAUDE_ENABLED = claudeReadSetting("enabled", [ "on", "off" ], "on") !== "off";
+let CLAUDE_ENABLED = !window.__claudeWebWithdrawn && claudeReadSetting("enabled", [ "on", "off" ], "on") !== "off";
+// The independent safety loader owns recovery before the main module.
+
 
 const CLAUDE_MOTION_ENABLED = claudeReadSetting("motion", [ "on", "off" ], "on") !== "off";
 
@@ -363,7 +372,7 @@ const CLAUDE_FEATURES = {
 };
 
 const CLAUDE_KEYBOARD_BUILD = {
-  id: "2.0.122-public-full-" + CLAUDE_THEME_VARIANT + "-" + CLAUDE_LAYOUT + "-ext",
+  id: "2.0.124-public-full-" + CLAUDE_THEME_VARIANT + "-" + CLAUDE_LAYOUT + "-ext",
   mode: "full"
 };
 
@@ -379,12 +388,12 @@ const officialStyle = document.createElement("link");
 
 officialStyle.rel = "stylesheet";
 
-officialStyle.href = new URL("styles/official-layout.css?v=2.0.122", import.meta.url).href;
+officialStyle.href = new URL("styles/official-layout.css?v=2.0.124", import.meta.url).href;
 
 document.documentElement.dataset.claudeEnabled = CLAUDE_ENABLED ? 'on' : 'off';
 if (CLAUDE_ENABLED) document.head.append(officialStyle);
 const startOfficialLayout = () => {
-  if (!CLAUDE_ENABLED) return;
+  if (!CLAUDE_ENABLED || window.__claudeWebWithdrawn) return;
   document.head.append(officialStyle);
   window.__claudeOfficialLayout?.destroy();
   window.__claudeOfficialLayout = installOfficialLayout(window);
@@ -400,6 +409,10 @@ function claudeBootOptions(variant) {
 }
 if (CLAUDE_ENABLED) {
   try {
+    // Older builds stored the theme's own variables as the whole Custom CSS. Those live in our
+    // stylesheets now, so drop that copy (only when it is exactly ours) before adding the boot import.
+    const settings = window.SillyTavern?.getContext?.()?.powerUserSettings;
+    if (settings && Object.values(CLAUDE_THEMES).some(theme => theme.custom_css === settings.custom_css)) settings.custom_css = "";
     syncBootStyle(claudeBootOptions(CLAUDE_THEME_VARIANT));
   } catch (error) {
     console.warn("[Claude Web] 启动样式同步失败：", error);
@@ -805,13 +818,17 @@ if (CLAUDE_ENABLED) {
     const OPTION_CLASS = "claude-integrated-theme-option";
     const THEME_NAME = CLAUDE_THEME.name;
     const LIVE_CSS = typeof CLAUDE_LIVE_CSS !== "undefined" ? CLAUDE_LIVE_CSS : CLAUDE_THEME.custom_css;
-    const THEME_VALUES = Object.fromEntries(Object.entries(CLAUDE_THEME).filter(([key]) => key !== "name"));
+    // custom_css is the user's own field: our variables already live in styles/<variant>-*.css,
+    // and the user's Custom CSS has to stay where it is (it also carries our boot import).
+    const THEME_VALUES = Object.fromEntries(Object.entries(CLAUDE_THEME).filter(([key]) => key !== "name" && key !== "custom_css"));
     const RESTORE_KEY = "claude-integrated-theme-restore:v2";
     const WATCHDOG_KEY = "__claudeIntegratedThemeWatchdog";
     const HOST_DELETE_MODE_SELECTOR_MARKS = [ "body.documentstyle", "#chat", ".last_mes:has(", ".del_checkbox[style", ".mes_text" ];
     const INSTANCE_TOKEN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     let destroyed = !1;
+    let restoreResult = null;
     let hostPageUnloading = !1;
+    let hostPageHideConfirmed = !1, hostUnloadResetTimer = 0;
     let retryTimer = 0;
     let runnerRemovalTimer = 0;
     let runnerPresenceObserver = null;
@@ -821,8 +838,8 @@ if (CLAUDE_ENABLED) {
       restore: !1
     });
     function getContext() {
-      if (typeof SillyTavern !== "undefined") return SillyTavern;
-      return hostWindow.SillyTavern ?? null;
+      const bridge = hostWindow.SillyTavern ?? (typeof SillyTavern !== "undefined" ? SillyTavern : null);
+      return typeof bridge?.getContext === "function" ? bridge.getContext() : bridge;
     }
     function isClaudeThemeName(value) {
       return typeof value === "string" && (value === THEME_NAME || value.startsWith("Claude Web ·"));
@@ -841,7 +858,7 @@ if (CLAUDE_ENABLED) {
       const snapshot = {
         theme: settings.theme ?? ""
       };
-      for (const key of Object.keys(THEME_VALUES)) snapshot[key] = settings[key];
+      for (const key of [ ...Object.keys(THEME_VALUES), "custom_css" ]) snapshot[key] = settings[key];
       try {
         hostWindow.localStorage.setItem(RESTORE_KEY, JSON.stringify(snapshot));
       } catch {}
@@ -1057,6 +1074,7 @@ if (CLAUDE_ENABLED) {
       return next;
     }
     function persistFullTheme() {
+      if (destroyed || hostWindow.__claudeWebWithdrawn) return null;
       const context = getContext();
       const settings = context?.powerUserSettings;
       if (!settings) return null;
@@ -1083,13 +1101,17 @@ if (CLAUDE_ENABLED) {
       }));
       return !0;
     }
-    function restorePreviousTheme() {
+    async function restorePreviousTheme() {
       const context = getContext();
       const settings = context?.powerUserSettings;
       const snapshot = readRestorePoint();
-      // Nothing was saved over the user's theme, so there is nothing to restore. Falling back to
-      // another native theme here would replace the user's theme and wipe their Custom CSS.
-      if (!snapshot) return;
+      // Claude Web no longer writes Custom CSS, so keep the user's current Custom CSS (minus our boot
+      // import) instead of the copy taken when CW was enabled: selecting the native theme below
+      // overwrites Custom CSS, and the snapshot is what puts it back.
+      if (snapshot && typeof snapshot === "object" && settings) {
+        const currentCss = stripBootBlock(settings.custom_css);
+        Object.values(CLAUDE_THEMES).some(theme => theme.custom_css === currentCss) || (snapshot.custom_css = currentCss);
+      }
       const themeSelect = findThemeSelect(THEME_NAME);
       let restored = !1;
       if (settings && snapshot && typeof snapshot === "object") {
@@ -1104,22 +1126,47 @@ if (CLAUDE_ENABLED) {
             bubbles: !0
           }));
         }
+        // Native theme selection may overwrite custom snapshot values.
+        Object.assign(settings, snapshot);
+        applyCssVariables(settings);
+        applyUiState(settings);
+        syncControls(settings, THEME_NAME, !1);
+        const restoredCss = hostDocument.querySelector("#customCSS, #custom_css");
+        restoredCss && hostWindow.jQuery?.(restoredCss).trigger("input");
         restored = !0;
       } else {
         if (settings) {
-          settings.custom_css = "";
+          const previousCss = stripBootBlock(settings.custom_css);
+          const ownedCss = Object.values(CLAUDE_THEMES).some(theme => theme.custom_css === previousCss);
+          settings.custom_css = ownedCss ? "" : previousCss;
           const customCss = hostDocument.querySelector("#customCSS, #custom_css");
-          customCss && (customCss.value = "");
+          customCss && (customCss.value = settings.custom_css);
           restored = !0;
         }
+        const preservedCss = settings?.custom_css;
         restored = nativeThemeFallback(themeSelect);
+        if (settings && preservedCss !== undefined) {
+          settings.custom_css = preservedCss;
+          const customCss = hostDocument.querySelector("#customCSS, #custom_css");
+          if (customCss) { customCss.value = preservedCss; hostWindow.jQuery?.(customCss).trigger("input"); }
+        }
         !restored && settings && (restored = !0);
       }
-      if (!restored) return;
-      try {
-        hostWindow.localStorage.removeItem(RESTORE_KEY);
-      } catch {}
-      context?.saveSettingsDebounced?.();
+      if (!restored || !settings) throw new Error("无法恢复原生主题");
+      const target = snapshot || Object.fromEntries(["theme", ...Object.keys(THEME_VALUES), "custom_css"].map(key => [key, settings[key]]));
+      const expected = JSON.parse(JSON.stringify(target));
+      const record = JSON.stringify(expected);
+      // Missing old snapshots cannot reconstruct the original theme. Persist
+      // the explicit native fallback before saving so failures remain retryable.
+      if (hostWindow.__claudeSafety) await hostWindow.__claudeSafety.persist(false, expected);
+      else hostWindow.localStorage.setItem(RESTORE_KEY, record);
+      if (hostWindow.localStorage.getItem(RESTORE_KEY) !== record) throw new Error("无法保留主题恢复记录");
+      const safetyId = hostWindow.__claudeSafety?.state?.id;
+      const {saveRestoredTheme} = await import(new URL("theme-restore.js?v=2.0.124", CLAUDE_EXTENSION_BASE).href);
+      await saveRestoredTheme(hostWindow, context, expected);
+      if (hostWindow.localStorage.getItem(RESTORE_KEY) !== record || hostWindow.localStorage.getItem("claude-web:enabled") !== "off") throw new Error("恢复状态已改变，请重新确认");
+      await hostWindow.__claudeSafety?.confirmRestore(record, safetyId);
+      hostWindow.localStorage.removeItem(RESTORE_KEY);
       hostWindow.requestAnimationFrame?.(() => {
         hostWindow.dispatchEvent(new hostWindow.Event("resize"));
       });
@@ -1139,10 +1186,11 @@ if (CLAUDE_ENABLED) {
       for (const property of [ "--cl-mobile-composer-height", "--cl-mobile-viewport-height", "--cl-mobile-viewport-top", "--clawd-signoff-image" ]) hostDocument.documentElement.style.removeProperty(property);
     }
     function destroy({restore: restore = !1} = {}) {
-      if (destroyed) return;
+      if (destroyed) return restoreResult;
       destroyed = !0;
       retryTimer && hostWindow.clearTimeout(retryTimer);
       runnerRemovalTimer && hostWindow.clearTimeout(runnerRemovalTimer);
+      hostUnloadResetTimer && hostWindow.clearTimeout(hostUnloadResetTimer);
       runnerPresenceObserver?.disconnect();
       runnerPresenceObserver = null;
       const watchdog = hostWindow[WATCHDOG_KEY];
@@ -1156,23 +1204,43 @@ if (CLAUDE_ENABLED) {
       restoreStyleAttributeRules();
       removeRuntimeArtifacts();
       hostWindow[INSTANCE_KEY] === api && delete hostWindow[INSTANCE_KEY];
-      restore && restorePreviousTheme();
+      if (restore) restoreResult = restorePreviousTheme().then(() => true, error => {
+        hostWindow.__claudeThemeRestoreError = error.message;
+        console.warn("[Claude Web] 原生主题恢复尚未保存：", error);
+        return false;
+      });
+      return restoreResult;
     }
-    function markHostPageUnloading() {
+    function markHostPageUnloading(event) {
       hostPageUnloading = !0;
+      hostUnloadResetTimer && hostWindow.clearTimeout(hostUnloadResetTimer);
+      if (event?.type === "pagehide") {
+        hostPageHideConfirmed = !0;
+        hostUnloadResetTimer = 0;
+      } else {
+        // beforeunload can be cancelled. A surviving page must not retain the
+        // navigation guard and suppress a later runner-removal recovery.
+        hostUnloadResetTimer = hostWindow.setTimeout(() => {
+          hostUnloadResetTimer = 0;
+          if (!hostPageHideConfirmed) hostPageUnloading = !1;
+        }, 0);
+      }
     }
     function handleRunnerPageHide(event) {
       // Only an iframe runner needs cleaning up when it goes away. Running directly in the page,
       // a pagehide (tab closed, app sent to background) must not touch the user's theme.
       if (!(runnerFrame instanceof hostWindow.HTMLIFrameElement)) return;
       if (event?.persisted || event?.originalEvent?.persisted) return;
+      // Host navigation keeps the user's enable preference. Only removal of a
+      // separate runner may restore the host's previous theme.
       destroy({
-        restore: !0
+        restore: !hostPageUnloading
       });
     }
     function handleRunnerPageShow(event) {
       if (!event?.persisted || destroyed) return;
       hostPageUnloading = !1;
+      hostPageHideConfirmed = !1;
       window.addEventListener("pagehide", handleRunnerPageHide, {
         once: !0
       });
@@ -1182,6 +1250,7 @@ if (CLAUDE_ENABLED) {
       destroy: destroy,
       apply: persistFullTheme,
       applyVariant: function(variant) {
+        if (destroyed || hostWindow.__claudeWebWithdrawn) return !1;
         const theme = CLAUDE_THEMES?.[variant];
         if (!theme) return !1;
         const context = getContext();
@@ -1189,7 +1258,7 @@ if (CLAUDE_ENABLED) {
         if (!settings) return !1;
         const previousName = settings.theme;
         rememberRestorePoint(settings);
-        const values = valuesWithPreservedQuote(settings, Object.fromEntries(Object.entries(theme).filter(([key]) => key !== "name")));
+        const values = valuesWithPreservedQuote(settings, Object.fromEntries(Object.entries(theme).filter(([key]) => key !== "name" && key !== "custom_css")));
         Object.assign(settings, values);
         settings.theme = theme.name;
         applyCssVariables(settings);
@@ -7094,6 +7163,7 @@ if (CLAUDE_ENABLED) {
     return claudeDetectPhone() || window.matchMedia?.("(max-width:700px)").matches ? "mobile" : "pc";
   }
   function applyVariantLive(variant) {
+    if (window.__claudeWebWithdrawn) return !1;
     const link = document.getElementById("claude-integrated-theme-live-style");
     if (!(link instanceof HTMLLinkElement)) return !1;
     const layout = resolveLayout(read("layout", [ "auto", "pc", "mobile" ], "auto"));
@@ -7383,29 +7453,66 @@ if (CLAUDE_ENABLED) {
       return !1;
     }
   }
+  function themeRestoreFailureHint() {
+    let retained = false;
+    try { retained = !!localStorage.getItem("claude-integrated-theme-restore:v2"); } catch {}
+    const record = retained ? "恢复记录已保留。" : "恢复记录未能保留，刷新后无法自动重试。";
+    const pending = window.__claudeThemeSavePending ? "仅停止等待，原生请求可能仍在进行；请等待请求结束再刷新重试。" : "请检查连接后刷新重试。";
+    return "CW 已关闭，但原生主题恢复尚未保存。" + record + pending + (window.__claudeThemeRestoreError || "");
+  }
   function mountEnabled(panel) {
     const box = panel.querySelector("#claude-web-enabled");
     const hint = panel.querySelector("#claude-web-enabled-hint");
     if (!box) return;
     box.checked = enabled;
+    window.__claudeThemeRecovery?.then(recovered => { if (!recovered && hint) hint.textContent = themeRestoreFailureHint(); });
     (() => {
       hint.textContent = box.checked ? "" : "已关闭。酒馆恢复原生界面，下面的设置暂时不起作用。";
     })();
-    box.addEventListener("change", () => {
+    box.addEventListener("change", async () => {
+      if (window.__claudeSafety) {
+        const safety = window.__claudeSafety;
+        if (safety.busy) {
+          box.checked = safety.state?.enabled === true;
+          hint.textContent = "安全操作正在进行，请等待当前操作结束。";
+          return;
+        }
+        const wanted = box.checked;
+        try { await (wanted ? safety.enable() : safety.disable()); }
+        catch (error) { hint.textContent = "操作尚未完成：" + error.message; }
+        box.checked = safety.state?.enabled === true;
+        return;
+      }
+      if (window.__claudeThemeSavePending) {
+        box.checked = false;
+        hint.textContent = themeRestoreFailureHint();
+        return;
+      }
       if (!write("enabled", box.checked ? "on" : "off")) {
         hint.textContent = "写入失败，设置没保存。";
         box.checked = enabled;
+    window.__claudeThemeRecovery?.then(recovered => { if (!recovered && hint) hint.textContent = themeRestoreFailureHint(); });
         return;
       }
-      if (!box.checked) {
-        window.__claudeIntegratedTheme?.destroy?.({
-          restore: !0
-        });
-        teardownLive();
+      if (box.checked) {
+        if (window.__claudeSafety) { await window.__claudeSafety.enable(); return; }
+        hint.textContent = "正在启用，刷新中…";
+        window.location.reload();
+        return;
       }
-      hint.textContent = box.checked ? "正在启用，刷新中…" : "正在关闭，刷新中…";
-      const reload = () => window.setTimeout(() => window.location.reload(), box.checked ? 150 : 320);
-      box.checked ? reload() : removeBootStyle().finally(reload);
+      window.__claudeSafety?.markOff();
+      box.disabled = true;
+      hint.textContent = "正在关闭，保存原生主题…";
+      const result = window.__claudeIntegratedTheme?.destroy?.({restore: true});
+      teardownLive();
+      try {
+        if (await result === false) throw new Error("主题保存未确认");
+        hint.textContent = "已关闭，刷新中…";
+        window.location.reload();
+      } catch (error) {
+        hint.textContent = themeRestoreFailureHint();
+        box.disabled = false;
+      }
     });
   }
   function mount(host) {
