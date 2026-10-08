@@ -1706,12 +1706,30 @@ export function installOfficialLayout(win = window) {
     if (!shield) {
       shield = make('div', 'cw-sheet-shield'); shield.setAttribute('popover', 'manual'); shield.setAttribute('aria-hidden', 'true');
       for (const type of ['click', 'pointerdown', 'mousedown', 'touchstart']) shield.addEventListener(type, e => {
-        if (!recoverDroppedSheets()) return;
+        if (!shieldAboveSheet(e) && !recoverDroppedSheets()) return;
         e.preventDefault(); e.stopPropagation();
       }, {passive: false});
+      // Fork fix: the shield must sit under every open sheet. If the pointer reaches the shield inside an open
+      // sheet's box, the shield was stacked above it (user saw the whole editor, close button included, unclickable).
+      // Fix the order as soon as the pointer moves over it, so the first click already works.
+      shield.addEventListener('pointermove', shieldAboveSheet);
       doc.body.append(shield);
     }
-    if (!externalModalOpen && !shield.matches(':popover-open')) shield.showPopover();
+    if (!externalModalOpen && !shield.matches(':popover-open')) {
+      shield.showPopover();
+      // Showing the shield puts it above sheets that are already open; lift them back over it.
+      for (const d of openSheetLayers()) if (d.matches(':popover-open')) { try { d.hidePopover(); d.showPopover(); } catch {} }
+    }
+  }
+  function shieldAboveSheet(e) {
+    if (externalModalOpen || !shield || e.target !== shield) return false;
+    const point = e.touches?.[0] || e;
+    const x = point.clientX, y = point.clientY;
+    if (typeof x !== 'number' || typeof y !== 'number') return false;
+    const covered = openSheetLayers().some(d => { const r = d.getBoundingClientRect(); return r.width && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; });
+    if (!covered) return false;
+    console.warn('[Claude Web] sheet shield was above an open sheet; restacking');
+    return restoreSheetLayers(openSheetLayers());
   }
   function shieldMaybeDown() {
     if (!shield || doc.querySelector('dialog[data-cw-lifted][open]:popover-open') || pmHost) return;
