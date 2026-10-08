@@ -21,6 +21,8 @@ import { buildClawdRig } from "./clawd-rig.js?v=2.0.122";
 
 import { createClawdPile } from "./clawd-pile.js?v=2.0.122";
 
+import { syncBootStyle, removeBootStyle } from "./boot-style.js?v=2.0.122";
+
 const CLAUDE_EXTENSION_BASE = new URL(".", import.meta.url).href;
 
 const CLAUDE_THEMES = {
@@ -389,6 +391,30 @@ const startOfficialLayout = () => {
 };
 if (document.readyState === 'complete') window.setTimeout(startOfficialLayout, 0);
 else window.addEventListener('load', startOfficialLayout, { once: true });
+
+// Boot stylesheet (see boot-style.js): keeps the Claude Web look in Custom CSS so the next page
+// load paints it from the first frame. Once our own stylesheets are loaded it is switched off.
+function claudeBootOptions(variant) {
+  const auto = claudeReadSetting("theme-auto", [ "manual", "system", "time" ], "manual");
+  return { variant: variant || claudeReadSetting("variant", [ "day", "night" ], CLAUDE_THEME_VARIANT), layoutChoice: claudeReadSetting("layout", [ "auto", "pc", "mobile" ], "auto"), followSystem: auto === "system" };
+}
+if (CLAUDE_ENABLED) {
+  try {
+    syncBootStyle(claudeBootOptions(CLAUDE_THEME_VARIANT));
+  } catch (error) {
+    console.warn("[Claude Web] 启动样式同步失败：", error);
+  }
+  const releaseBoot = () => {
+    const live = document.getElementById("claude-integrated-theme-live-style");
+    if (officialStyle.sheet && live instanceof HTMLLinkElement && live.sheet) {
+      document.documentElement.setAttribute("data-cw-boot-off", "");
+      return;
+    }
+    releaseBoot.tries = (releaseBoot.tries || 0) + 1;
+    releaseBoot.tries < 600 && window.setTimeout(releaseBoot, 50);
+  };
+  releaseBoot();
+} else removeBootStyle();
 
 console.info("[Claude Web] 扩展形态启动：" + CLAUDE_THEME_VARIANT + " / " + CLAUDE_LAYOUT + "（在酒馆「扩展」面板的 Claude Web 里可切换）");
 
@@ -1061,6 +1087,9 @@ if (CLAUDE_ENABLED) {
       const context = getContext();
       const settings = context?.powerUserSettings;
       const snapshot = readRestorePoint();
+      // Nothing was saved over the user's theme, so there is nothing to restore. Falling back to
+      // another native theme here would replace the user's theme and wipe their Custom CSS.
+      if (!snapshot) return;
       const themeSelect = findThemeSelect(THEME_NAME);
       let restored = !1;
       if (settings && snapshot && typeof snapshot === "object") {
@@ -1133,6 +1162,9 @@ if (CLAUDE_ENABLED) {
       hostPageUnloading = !0;
     }
     function handleRunnerPageHide(event) {
+      // Only an iframe runner needs cleaning up when it goes away. Running directly in the page,
+      // a pagehide (tab closed, app sent to background) must not touch the user's theme.
+      if (!(runnerFrame instanceof hostWindow.HTMLIFrameElement)) return;
       if (event?.persisted || event?.originalEvent?.persisted) return;
       destroy({
         restore: !0
@@ -7085,6 +7117,9 @@ if (CLAUDE_ENABLED) {
     link.setAttribute("href", styleUrl.href);
     document.documentElement.dataset.claudeIntegratedTheme = variant;
     window.__claudeIntegratedTheme?.applyVariant?.(variant);
+    try {
+      syncBootStyle(claudeBootOptions(variant));
+    } catch {}
     return !0;
   }
   function hostToast(message) {
@@ -7369,7 +7404,8 @@ if (CLAUDE_ENABLED) {
         teardownLive();
       }
       hint.textContent = box.checked ? "正在启用，刷新中…" : "正在关闭，刷新中…";
-      window.setTimeout(() => window.location.reload(), box.checked ? 150 : 320);
+      const reload = () => window.setTimeout(() => window.location.reload(), box.checked ? 150 : 320);
+      box.checked ? reload() : removeBootStyle().finally(reload);
     });
   }
   function mount(host) {
@@ -7428,6 +7464,7 @@ if (CLAUDE_ENABLED) {
     autoSelect.addEventListener("change", () => {
       if (!write("theme-auto", autoSelect.value)) return;
       syncAutomaticTheme();
+      enabled && syncBootStyle(claudeBootOptions(variantSelect.value));
     });
     for (const [input, key] of [ [ dayStartInput, "theme-day-start" ], [ nightStartInput, "theme-night-start" ] ]) input.addEventListener("change", () => {
       if (!write(key, input.value)) return;
@@ -7505,7 +7542,8 @@ if (CLAUDE_ENABLED) {
       if (!write("layout", layoutSelect.value)) return;
       hint.textContent = "正在切换布局…";
       syncPanelPresentationRef();
-      window.setTimeout(() => window.location.reload(), 120);
+      enabled && syncBootStyle(claudeBootOptions(variantSelect.value));
+      window.setTimeout(() => window.location.reload(), 1200);
     });
     const motionBox = panel.querySelector("#claude-web-motion");
     const decorationsBox = panel.querySelector("#claude-web-decorations");

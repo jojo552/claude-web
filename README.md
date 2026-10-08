@@ -1,5 +1,14 @@
 # Claude Web 2.0
 
+## Fork 修改：首屏直接加载 Claude 外观
+
+- 酒馆只会在启动后期才加载第三方扩展，所以以前会先显示原生界面，再整页跳成 Claude Web。
+- 现在扩展会在“自定义 CSS”最前面维护一段带标记的 `@import`（`/* claude-web:boot */`），指向 `styles/boot-*.css`。自定义 CSS 随设置一起最早生效，因此首屏就是 Claude 外观，页面像原生一样逐步加载出来，没有遮罩。
+- 扩展自己的样式表加载完成后，会给 `<html>` 加上 `data-cw-boot-off`，boot 样式随即失效，避免重复计算。
+- 在扩展管理里禁用、删除，或在设置面板关掉扩展时，这段 `@import` 会自动移除；用户自己写的自定义 CSS 不受影响。
+- 修复：以前页面关闭（pagehide）时会“还原主题”，在没有还原点时会把主题切成第一个原生主题（如 Azure）并清空自定义 CSS。
+- `styles/boot-*.css` 由 `tools/build-boot-css.mjs` 根据现有样式表生成：`cd tools && npm i && node build-boot-css.mjs`。修改 styles 后需重新生成。
+
 ## 2.0.115 更新
 
 - 恢复手机端消息操作栏、省略号折叠和用户消息编辑按钮，并修正窄屏下按钮被挤出的问题。
