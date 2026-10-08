@@ -6254,6 +6254,27 @@ if (CLAUDE_ENABLED) {
     return [...candidates];
   }
 
+  function externalLayerNodePaints(node) {
+    if (node.matches('img,canvas,video,iframe,svg,input,textarea,select,button')) return true;
+    for (const child of node.childNodes) if (child.nodeType === 3 && child.textContent.trim()) return true;
+    const style = hostWindow.getComputedStyle(node);
+    if (style.backgroundImage !== 'none' || (style.backdropFilter && style.backdropFilter !== 'none') || (style.boxShadow && style.boxShadow !== 'none')) return true;
+    const color = style.backgroundColor || '';
+    if (!color || color === 'transparent') return false;
+    const parts = /\(([^)]*)\)/.exec(color)?.[1].split(/[\s,/]+/).filter(Boolean) || [];
+    return parts.length > 3 ? Number.parseFloat(parts[3]) > 0 : true;
+  }
+  // elementsFromPoint also sees layers below our top-layer editors, so a modal opened from inside an editor still counts.
+  function externalLayerPaints(element, rect) {
+    const left = Math.max(0, rect.left), right = Math.min(hostWindow.innerWidth, rect.right);
+    const top = Math.max(0, rect.top), bottom = Math.min(hostWindow.innerHeight, rect.bottom);
+    for (const [fx, fy] of [[.5,.5],[.25,.25],[.75,.25],[.25,.75],[.75,.75]]) {
+      const stack = hostDocument.elementsFromPoint?.(left + (right - left) * fx, top + (bottom - top) * fy) || [];
+      const hit = stack.find(node => element.contains(node));
+      for (let node = hit; node; node = node === element ? null : node.parentElement) if (externalLayerNodePaints(node)) return true;
+    }
+    return false;
+  }
   function isVisibleExternalModal(element) {
     if (!(element instanceof hostWindow.HTMLElement)) return false;
     // Our settings frame shares the native drawer layer; it is not an external modal.
@@ -6275,6 +6296,10 @@ if (CLAUDE_ENABLED) {
     const visibleWidth = Math.max(0, Math.min(rect.right, width) - Math.max(rect.left, 0));
     const visibleHeight = Math.max(0, Math.min(rect.bottom, height) - Math.max(rect.top, 0));
     if (!visibleWidth || !visibleHeight) return false;
+    // Fork fix: a transparent full-screen wrapper (floating-button containers and similar) is not a modal.
+    // Treating it as one lifted it above everything and made CW editors yield underneath it, so nothing,
+    // not even the editor's close button, could be clicked. Require the layer to actually paint something.
+    if (!externalLayerPaints(element, rect)) return false;
     // A small dialog is valid when explicitly marked; a bare fixed float is not.
     const semantic = (externalModalSources.get(element) || []).some(source => {
       if (!source.matches(EXTERNAL_MODAL_SELECTOR) || source.closest(externalNotificationSelector)) return false;
