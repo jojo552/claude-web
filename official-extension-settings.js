@@ -147,7 +147,7 @@ export function createExtensionSettings({win,t,L,make,button,icon,openEditor}) {
     if(P.layout&&P.rest!==false){newSec(typeof P.restTitle==='function'?' ':P.restTitle||'');if(typeof P.restTitle==='function')s.restSec=sec;}
     const heading=(n,tx)=>{const map=P.heading||{};if(tx in map){if(map[tx])newSec(map[tx]);else card=null;return;}newSec(tx);};
     const visit=el=>{
-      for(const ch of el.children){
+      for(const ch of [...el.children]){
         if(ch.matches('.cwx-page,template,script,style'))continue;
         const u=byNode.get(ch);if(u){if(P.rest!==false)emit(u);continue;}
         if(used.has(ch)||skip.has(ch)||P.drop?.some(sel=>ch.matches(sel)))continue;
@@ -223,12 +223,17 @@ export function createExtensionSettings({win,t,L,make,button,icon,openEditor}) {
   }
 
   /* ---------- 同步：原来的块藏了，我们的行也藏；空卡片、空小节一起藏 ---------- */
-  const cs=n=>win.getComputedStyle(n);
   function sync(s){
     if(!s.page)return;
-    for(const u of s.rows){
-      const self=u.proxy||u.kind==='note'?false:u.kind==='action'?cs(u.button).display==='none'||u.button.hidden:u.kind==='raw'?hiddenSelf(u.node)||(!u.node.hasAttribute('no-scripts-text')&&!u.node.matches(FIELD)&&!u.node.children.length&&!u.node.textContent.trim()):hiddenSelf(u.self);
-      const off=self||u.gates.some(g=>g.hidden||cs(g).display==='none')||!!u.top&&hiddenSelf(u.top);
+    // 2.0.124 fork：先把每行该不该藏全部算完，再统一写 hidden。原来读一次 getComputedStyle、写一次 hidden 交替进行，
+    // 每一行都逼浏览器把整页（一万多个元素、上万条规则）重算一遍样式，生图 / 向量 / 记忆这类配置页一打开主线程卡 2–5 秒。
+    const shown=new Map(),cs=n=>{let v=shown.get(n);if(v===undefined){v=win.getComputedStyle(n).display;shown.set(n,v);}return v;};
+    const offs=s.rows.map(u=>{
+      const self=u.proxy||u.kind==='note'?false:u.kind==='action'?cs(u.button)==='none'||u.button.hidden:u.kind==='raw'?hiddenSelf(u.node)||(!u.node.hasAttribute('no-scripts-text')&&!u.node.matches(FIELD)&&!u.node.children.length&&!u.node.textContent.trim()):hiddenSelf(u.self);
+      return self||u.gates.some(g=>g.hidden||cs(g)==='none')||!!u.top&&hiddenSelf(u.top);
+    });
+    for(const [i,u] of s.rows.entries()){
+      const off=offs[i];
       if(u.row.hidden!==off)u.row.hidden=off;
       if(u.kind==='action'){const label=title(u)||L('操作'),span=u.row.querySelector('.cwx-title');if(span&&u.button.matches('input')&&span.textContent!==label)span.textContent=label;}
       u.paint?.();
@@ -262,7 +267,7 @@ export function createExtensionSettings({win,t,L,make,button,icon,openEditor}) {
           // 酒馆往原处加了新控件（换服务商后重画设置）→ 重排；我们页面里的列表自己会变，不用管。
           if(!inPage&&[...m.addedNodes].some(n=>n.nodeType===1&&(n.matches(CONTROL)||n.querySelector(CONTROL))))rebuild=true;
           if(inPage)touched=true;
-        }else if(!(inPage&&m.target.matches?.('.cwx-row,.cwx-card,.cwx-sec,.cwx-block')))touched=true;
+        }else if(!(inPage&&m.target.matches?.('.cwx-row,.cwx-card,.cwx-sec,.cwx-block,.cwx-raw')))touched=true;
       }
       if(rebuild)schedule(s,true);else if(touched)schedule(s);
     });
@@ -658,6 +663,8 @@ export function createExtensionSettings({win,t,L,make,button,icon,openEditor}) {
     return PLANS.generic;
   }
   function open(root,title){
+    // Do not rebuild a root already hosted by openEditor (e.g. a double click).
+    if(!root?.isConnected||root.classList.contains('cw-v4-editing')||[...sessions].some(s=>s.root===root&&!s.closed))return;
     // 自己画整套界面的扩展（酒馆助手这种）原样放进白卡片。
     // 酒馆自带、我们有专门排法的（正则……）不算：柏宝箱会往 #regex_container 里挂一个藏着的 Vue 根（data-v-app），
     // 再把仿原生的行渲染进 #saved_regex_scripts；按「自画界面」原样放，藏着的勾选框全被画成大开关（2.0.314）。
